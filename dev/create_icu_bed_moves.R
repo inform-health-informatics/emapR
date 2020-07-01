@@ -27,65 +27,56 @@ ctn <- DBI::dbConnect(RPostgres::Postgres(),
 query <- "SELECT * FROM uds.star.bed_moves"
 rdt <- DBI::dbGetQuery(ctn, query)
 setDT(rdt)
-
 wdt <- data.table::copy(rdt)
 
-# Melt long and drop non-census beds
-wdt <- unique(melt.data.table(wdt,
-                id.vars = c( 'mrn', 'csn', 'department', 'room', 'bed' ),
-                measure.vars = c('admission', 'discharge')
-                ))
-wdt[,.N,by=bed][order(-N)][1:90]
-# wdt[ bed == "-"]
-# wdt[ room == "POOL ROOM"]
-
-# Hand crafted list
+# drop all non-census steps from this Hand crafted list
 non_census <- c(
-"PATIENT OFFSITE",
-"HOLDING BAY",
-"POOL ROOM",
-"NONE",
-"WAIT",
-"THR",
-"ENDO",
-"ARRIVED",
-"DISCHARGE",
-"READY",
-"HOME",
-"VIRTUAL"
+  "PATIENT OFFSITE",
+  "HOLDING BAY",
+  "POOL ROOM",
+  "NONE",
+  "WAIT",
+  "THR",
+  "ENDO",
+  "ARRIVED",
+  "DISCHARGE",
+  "READY",
+  "HOME",
+  "VIRTUAL"
 )
-
 # Drop non-census areas
 wdt <- wdt[!is.na(bed)]
 wdt <- wdt[!(room %in% non_census) & !(bed %in% non_census)]
 
-# Drop the admission discharge flag and make unique (effectively stitch back together)
-wdt[, variable := NULL]
-setnames(wdt, 'value', 'ts')
+# define the discharge / end of observation for each mrn,csn; store
+wdt[, csn_admission := min(discharge),by=.(mrn,csn)]
+wdt[, csn_discharge := max(discharge),by=.(mrn,csn)]
 
-setkey(wdt, mrn,csn,ts)
-?paste
-wdt[, location := paste0(department,room,bed,collapse='^')]
+# delete all discharges
+wdt[, discharge := NULL]
+
+# define jumps and delete everything else
+wdt[, location := paste(department, room, bed, sep='^')]
+wdt[, location_jump := NULL]
+wdt <- guidEHR::column_jump(wdt, 'location',
+                     order_vars=c('mrn', 'csn', 'admission'),
+                     group=c('mrn', 'csn'),
+                     col_jump = 'location_jump')
+wdt <- wdt[is.na(location_jump) | location_jump == TRUE]
+wdt[, location_jump := NULL]
 wdt
-guidEHR::column_jump(wdt,)
-wdt
-duplicated(wdt[,.(mrn,csn,department,room,bed)])
+# create a discharge time from the next admission
+setkey(wdt,mrn,csn,admission)
+wdt[, discharge := shift(admission, type='lead'),by=.(mrn,csn)]
 
-wdt <- unique(wdt)
-setkey(wdt, mrn,csn,ts)
-wdt
+# use the stored end of observation to complete the discharge for the last step
+wdt[is.na(discharge), discharge := csn_discharge]
+setcolorder(wdt, c('mrn', 'csn', 'admission', 'discharge'))
+wdt[, location := NULL]
 
-wdt[order(mrn,csn,ts), ts1 := shift(ts,type='lead'), by=.(mrn,csn)]
-wdt[mrn == '40991395']
 
+if (debug) wdt[mrn == '40991395']
 if (debug) View(wdt)
-
-# Now drop the last time to close the episode
-wdt <- wdt[!is.na(ts1)]
-setnames(wdt, 'ts', 'admission')
-setnames(wdt, 'ts1', 'discharge')
-
-View(wdt)
 
 
 # First find all MRNs that have been to a critical care area
@@ -189,8 +180,8 @@ wdt <- DBI::dbGetQuery(ctn, query)
 setDT(wdt)
 
 # manual check current
-wdt[critcare==TRUE & is.na(discharge)]
-wdt[critcare==TRUE & is.na(discharge) & department == "UCH T03 INTENSIVE CARE"][order(bed)]
+wdt[critcare==TRUE & is.na(bed_discharge)]
+wdt[critcare==TRUE & is.na(bed_discharge) & department == "UCH T03 INTENSIVE CARE"][order(bed)]
 
 # look for repeated admissions
 setkey(wdt, mrn, admission)
@@ -206,7 +197,8 @@ setDT(xdt)
 xdt[, pat_enc_csn_id := as.character(pat_enc_csn_id)]
 
 ydt <- unique(wdt[critcare==TRUE, .(mrn,csn,department_admission,department_discharge)])
-ydt <- xdt[ydt, on="pat_enc_csn_id==csn", nomatch=0]
+ydt <- xdt[ydt, on="pat_enc_csn_id==csn"]
+# ydt <- xdt[ydt, on="pat_enc_csn_id==csn", nomatch=0]
 ydt[, discharge_diff := department_discharge - icu_stay_end_dttm]
 ydt[, admission_diff := department_admission - icu_stay_start_dttm]
 
