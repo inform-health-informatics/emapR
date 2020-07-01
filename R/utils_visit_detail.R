@@ -21,7 +21,6 @@ column_jump <- function(dt, col, order_vars, group, col_jump) {
 
   # define updates where the location changes; then keep those and the NAs
   # checks to see if the department has changed compared to the prev entry
-  assertthat::assert_that('data.table' %in% class(dt))
 
   dt[order(get(order_vars)),
      (col_jump) := shift(.SD, type="lag"),
@@ -52,7 +51,7 @@ time_jump <- function(dt, in_time, out_time, order_vars, group) {
 
 
 #' @export
-collapse_over <- function(dt, col, in_time, out_time, order_vars, group, time_jump_window=dhours(4)) {
+collapse_over <- function(dt, col, in_time, out_time, order_vars, group, time_jump_window=dhours(6)) {
   # defines ward transitions based on a time series in of ward names
   # and a gap of sufficent size in the time that a re-admission is likely
   tdt <- data.table::copy(dt)
