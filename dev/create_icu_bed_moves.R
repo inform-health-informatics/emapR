@@ -3,8 +3,8 @@
 # Test file to load and build bed moves
 # Work specifically with census moves so drop non-census beds
 
-debug <- FALSE
 debug <- TRUE
+debug <- FALSE
 
 # library(tidyverse)
 library(lubridate)
@@ -30,6 +30,7 @@ rdt <- DBI::dbGetQuery(ctn, query)
 setDT(rdt)
 setkey(rdt, mrn, admission)
 
+# start working with data
 wdt <- data.table::copy(rdt)
 wdt[, hl7_location := NULL]
 # FIXME: drop missing mrn
@@ -92,9 +93,9 @@ csn_vo <- tdt[admission == csn_admission | discharge == csn_discharge]
 
 setkey(wdt, admission)
 if (debug) wdt[mrn == '40991395']
-if (debug) View(wdt[mrn == '40991395'])
+# if (debug) View(wdt[mrn == '40991395'])
 if (debug) bm_csn[mrn == '40991395']
-if (debug) View(wdt)
+# if (debug) View(wdt)
 
 # First find all MRNs that have been to a critical care area
 critical_care_departments <- c(
@@ -104,6 +105,7 @@ critical_care_departments <- c(
   "WMS W01 CRITICAL CARE"
   )
 
+# Set-up census variable
 wdt[, critcare := department %in% critical_care_departments]
 wdt[, census := TRUE]
 wdt[is.na(bed) | (room %in% non_census) | (bed %in% non_census), census := FALSE]
@@ -111,7 +113,6 @@ wdt[is.na(bed) | (room %in% non_census) | (bed %in% non_census), census := FALSE
 
 # List of mrns and csns that have been through critical care
 mrn_csn <- unique(wdt[critcare == TRUE][,.(mrn,csn)])
-# mrn_csn[order(mrn,csn), visit_occurrence_i := seq_len(.N), by=mrn]
 
 
 # then select all bedmoves related to those patients
@@ -180,6 +181,8 @@ if (debug) tdt[mrn == '03036594']
 setnames(tdt, 'admission', 'bed_admission')
 setnames(tdt, 'discharge', 'bed_discharge')
 
+tdt[order(mrn,bed_admission), bed_i := seq_len(.N), by=.(mrn)]
+
 # Better: write this back to the icu_audit schema (rather than saving locally)
 table_path <- DBI::Id(schema="icu_audit", table="bed_moves")
 DBI::dbWriteTable(ctn, name=table_path, value=tdt, overwrite=TRUE)
@@ -240,8 +243,6 @@ wdt[critcare == TRUE, icu_start := lubridate::round_date(department_admission, u
 
 tdt <- caboodle_icu[wdt, on=.NATURAL]
 
-
-# RESUME
 tdt[, discharge_diff := department_discharge - icu_stay_end_dttm]
 tdt[, admission_diff := department_admission - icu_stay_start_dttm]
 
