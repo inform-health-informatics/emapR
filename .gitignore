@@ -3,6 +3,8 @@
 # You will need to specifically add data you want to publish to .gitkeep
 data/secure/*
 data/*
+# this holds files that you build during debugging that might contain PID etc
+dev_ignore/*
 
 # Outputs
 # You will need to specifically add outputs you want to publish to .gitkeep
