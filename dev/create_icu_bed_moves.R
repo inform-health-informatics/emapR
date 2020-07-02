@@ -190,7 +190,7 @@ DBI::dbWriteTable(ctn, name=table_path, value=tdt, overwrite=TRUE)
 stop()
 
 # now test and check
-library(tidyverse)
+# library(tidyverse)
 library(lubridate)
 library(data.table)
 
@@ -213,28 +213,40 @@ ctn <- DBI::dbConnect(RPostgres::Postgres(),
 query <- "SELECT * FROM uds.icu_audit.bed_moves"
 wdt <- DBI::dbGetQuery(ctn, query)
 setDT(wdt)
+setkey(wdt, bed_admission)
+wdt
 
 # manual check current
-wdt[critcare==TRUE & is.na(bed_discharge)]
 wdt[critcare==TRUE & is.na(bed_discharge) & department == "UCH T03 INTENSIVE CARE"][order(bed)]
 
 # look for repeated admissions
-setkey(wdt, mrn, admission)
-wdt[critcare==TRUE & is.na(discharge) & department == "UCH T03 INTENSIVE CARE"][order(bed)]
-wdt[mrn == '21203433']
-tdt[mrn == '21203433']
+if (debug) wdt[mrn == '21203433']
 
 
 # Compare vs Epic's ICU stay table
 query <- "SELECT * FROM uds.icu_audit.icu_stay"
-xdt <- DBI::dbGetQuery(ctn, query)
-setDT(xdt)
-xdt[, pat_enc_csn_id := as.character(pat_enc_csn_id)]
+caboodle_icu <- DBI::dbGetQuery(ctn, query)
+setDT(caboodle_icu)
+caboodle_icu[, pat_enc_csn_id := as.character(pat_enc_csn_id)]
+setnames(caboodle_icu, 'pat_enc_csn_id', 'csn')
+str(caboodle_icu)
+janitor::tabyl(caboodle_icu$icu_department)
+# drop T07S
+caboodle_icu <- caboodle_icu[icu_department != 'UCH T07S']
 
-ydt <- unique(wdt[critcare==TRUE, .(mrn,csn,department_admission,department_discharge)])
-ydt <- xdt[ydt, on="pat_enc_csn_id==csn"]
-# ydt <- xdt[ydt, on="pat_enc_csn_id==csn", nomatch=0]
-ydt[, discharge_diff := department_discharge - icu_stay_end_dttm]
-ydt[, admission_diff := department_admission - icu_stay_start_dttm]
+# you need to join on csn==csn department_admission~=icu_stay_start_dttm
+caboodle_icu[, icu_start := lubridate::round_date(icu_stay_start_dttm, unit="hour")]
+wdt[critcare == TRUE, icu_start := lubridate::round_date(department_admission, unit="hour")]
 
-openxlsx::write.xlsx(ydt, file='dev/tmp/star_vs_caboodle_bed_moves.xlsx')
+tdt <- caboodle_icu[wdt, on=.NATURAL]
+
+
+# RESUME
+tdt[, discharge_diff := department_discharge - icu_stay_end_dttm]
+tdt[, admission_diff := department_admission - icu_stay_start_dttm]
+
+openxlsx::write.xlsx(tdt, file='dev/tmp/star_vs_caboodle_bed_moves.xlsx')
+
+# Filter out just those from T3 AND found in caboodle
+openxlsx::write.xlsx(tdt[icu_department == 'UCH T03 ICU'],
+                     file='dev/tmp/star_vs_caboodle_bed_moves_t03.xlsx')
