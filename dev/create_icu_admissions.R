@@ -56,3 +56,18 @@ if (TRUE)  View(tdt[department == 'UCH T03 INTENSIVE CARE'])
 table_path <- DBI::Id(schema="icu_audit", table="icu_admissions")
 DBI::dbWriteTable(ctn, name=table_path, value=tdt, overwrite=TRUE)
 DBI::dbDisconnect(ctn)
+
+stop()
+
+# Compare vs Epic's ICU stay table
+query <- "SELECT * FROM uds.icu_audit.icu_stay"
+xdt <- DBI::dbGetQuery(ctn, query)
+setDT(xdt)
+xdt[, pat_enc_csn_id := as.character(pat_enc_csn_id)]
+
+xdt <- xdt[tdt, on="pat_enc_csn_id==csn"]
+# ydt <- xdt[ydt, on="pat_enc_csn_id==csn", nomatch=0]
+xdt[, discharge_diff := discharge_icu - icu_stay_end_dttm]
+xdt[, admission_diff := admission_icu - icu_stay_start_dttm]
+
+openxlsx::write.xlsx(xdt, file='dev/tmp/star_vs_caboodle_bed_moves.xlsx')
