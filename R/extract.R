@@ -125,7 +125,7 @@ extract <- function(connection,
     short_name = concept_short_names,
     func = coalesce_rows[[3]], # short name; should be OK for functions in the global env
     func_names_full = unlist(coalesce_rows[[2]])
-    )
+  )
   params <- params[concepts[,.(concept_id, target, short_name)], on='short_name', nomatch=0]
   params <- unique(params)
   params$i_concept_names <- paste0('i', params$concept_id)
@@ -163,14 +163,14 @@ extract <- function(connection,
   for (i in 1:length(tdts)) {
     suppressWarnings( param <- params[i,] ) # warning from tibble around unknown columns?
     udt <- tdt[concept_id == param$concept_id]
-    udt <- coalesce_over(udt, cadence=cadence)
+    udt <- coalesce_over(udt, value_as=param$target, cadence=cadence)
     udt[, col_name := param$col_name]
     print(paste('*** Coalesced', param$short_name, "from", nrow(tdt), "rows to", nrow(udt), "rows at a", cadence, "hourly cadence using", param$func))
     tdts[[i]] <- udt
 
   }
 
-  res <- rbindlist(tdts)
+  res <- rbindlist(tdts, fill=TRUE)
 
   elapsed_time <- signif(
     as.numeric(
@@ -218,7 +218,7 @@ rename_obs <- function(dt){
             'value_as_datetime',
             'value_as_number',
             'value_as_string'
-            )
+  )
   tdt <- dt[,..cols, with=TRUE]
   setnames(tdt, 'observation_datetime', 'datetime')
   setnames(tdt, 'observation_concept_id', 'concept_id')
@@ -252,18 +252,22 @@ make_times_relative <- function(dt, vd, units = "hours", debug=FALSE) {
   return(tdt)
 }
 
-coalesce_over <- function(dt, value_as='number', coalesce=NULL, cadence=1) {
+coalesce_over <- function(dt, value_as='value_as_number', coalesce=NULL, cadence=1) {
   'given dt with diff times, collapse using function over cadence'
 
-  value_as <- paste0('value_as_', value_as)
   # TODO: where value_as_string/datetime etc. then build in supporting logic
+
   cols <- paste(c('visit_detail_id', 'diff_time', value_as))
 
   if (is.null(coalesce)) coalesce <- "first"
+  if (value_as != 'value_as_number' & coalesce != 'first') {
+    rlang::warn(paste('!!! non-numeric parameter so forcing to first despite request'), coalesce)
+    coalesce <- 'first'
+  }
 
   dt <- dt[,..cols,with=TRUE]
   dt[, diff_time := round_any(diff_time, cadence)]
-  dt[, value_as_number := do.call(coalesce, list(get(value_as))), by=.(visit_detail_id, diff_time)]
+  dt[, (value_as) := do.call(coalesce, list(get(value_as))), by=.(visit_detail_id, diff_time)]
   return(unique(dt))
 }
 
