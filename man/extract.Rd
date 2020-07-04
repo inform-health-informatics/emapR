@@ -4,7 +4,7 @@
 \alias{extract}
 \title{Extract & Reshape Data from EMAP
 
-This is the workhorse function that transcribes data from EMAP OPS from OMOP 
+This is the workhorse function that transcribes data from EMAP OPS from OMOP
 CDM 5.3.1 to a standard rectangular table with 1 column per dataitem and 1
 row per time per patient.
 
@@ -24,7 +24,7 @@ to this, 24 would produce 1 row per 24 hours.
 
 Choose what variables you want to pull out wisely. This function is quite
 efficient considering what it needs to do, but it can take a very long
-time if extracting lots of data, and doing so repeatedly. It is a strong 
+time if extracting lots of data, and doing so repeatedly. It is a strong
 recomendation that you run your extraction on a small subset of patients
 first and check that you are happy with the result, before moving to a larger
 extraction.
@@ -81,7 +81,7 @@ sparse tibble with hourly cadence as rows, and unique OMOP concepts
 \description{
 Extract & Reshape Data from EMAP
 
-This is the workhorse function that transcribes data from EMAP OPS from OMOP 
+This is the workhorse function that transcribes data from EMAP OPS from OMOP
 CDM 5.3.1 to a standard rectangular table with 1 column per dataitem and 1
 row per time per patient.
 
@@ -101,7 +101,7 @@ to this, 24 would produce 1 row per 24 hours.
 
 Choose what variables you want to pull out wisely. This function is quite
 efficient considering what it needs to do, but it can take a very long
-time if extracting lots of data, and doing so repeatedly. It is a strong 
+time if extracting lots of data, and doing so repeatedly. It is a strong
 recomendation that you run your extraction on a small subset of patients
 first and check that you are happy with the result, before moving to a larger
 extraction.

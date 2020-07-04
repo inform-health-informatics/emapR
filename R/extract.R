@@ -1,6 +1,6 @@
 #' @title Extract & Reshape Data from EMAP
 #'
-#' This is the workhorse function that transcribes data from EMAP OPS from OMOP 
+#' This is the workhorse function that transcribes data from EMAP OPS from OMOP
 #' CDM 5.3.1 to a standard rectangular table with 1 column per dataitem and 1
 #' row per time per patient.
 #'
@@ -20,7 +20,7 @@
 #'
 #' Choose what variables you want to pull out wisely. This function is quite
 #' efficient considering what it needs to do, but it can take a very long
-#' time if extracting lots of data, and doing so repeatedly. It is a strong 
+#' time if extracting lots of data, and doing so repeatedly. It is a strong
 #' recomendation that you run your extraction on a small subset of patients
 #' first and check that you are happy with the result, before moving to a larger
 #' extraction.
@@ -53,16 +53,17 @@
 #'
 #' @return sparse tibble with hourly cadence as rows, and unique OMOP concepts
 #'   as columns.
-#' 
+#'
 #' @export
-#' 
+#'
 #' @import data.table
 #'
 #' @importFrom purrr map imap
 #' @importFrom lubridate now
 #' @importFrom rlang inform
 #' @importFrom dplyr first
-#' 
+#'
+#' @export
 extract <- function(connection,
                     target_schema,
                     visit_occurrence_ids = NULL,
@@ -71,7 +72,7 @@ extract <- function(connection,
                     coalesce_rows = NULL,
                     chunk_size = 5000,
                     cadence = 1) {
-  
+
   rlang::inform('--- NOTE: Not using chunksize argument at the moment')
   rlang::inform('--- NOTE: `visit_occurrence_ids` are actually visit_detail_ids')
   starting <- now()
@@ -86,7 +87,7 @@ extract <- function(connection,
   vd <- select_star_from(ctn, target_schema, 'visit_detail')  # ICU department visits; unique key = csn + dt_admit
   # Load and prepare the concepts
   concepts <- select_star_from(ctn, target_schema, 'concepts')
-  
+
   if (!(is.null(visit_occurrence_ids) | is.vector(visit_occurrence_ids)) ) {
     rlang::abort( "`visit_occurrence_ids` must be given as NULL (the default)")
   }
@@ -95,25 +96,25 @@ extract <- function(connection,
   # e.g. following hospital admission, following ICU admission
   # The following will align everything to the beginning of the ICU admission
   vd <- vd[,.(visit_detail_id, visit_detail_start_datetime)]
-  
+
   cadence_pos_num <- class(cadence) == "numeric" && cadence >= 0
   cadence_timestamp <- cadence == "timestamp"
-  
+
   if (!(cadence_pos_num || cadence_timestamp)) {
     rlang::abort(
       "`cadence` must be given as a numeric scalar >= 0
        or the string 'timestamp'")
-  }  
+  }
 
   # this will work for non-numeric data too
   # either one function for all (or) one function for each item
   if (is.null(coalesce_rows)) {
     rlang::inform("--- Using first to select values where more than one available")
   }
-  coalesce_rows <- parse_coalesce_functions(coalesce_rows) 
+  coalesce_rows <- parse_coalesce_functions(coalesce_rows)
 
   # check that we've either got one function to recycle or one function per variable
-  chk1 <- is.function(coalesce_rows) 
+  chk1 <- is.function(coalesce_rows)
   chk2 <- length(coalesce_rows)
   chk3 <- length(coalesce_rows) == length(concept_short_names)
   assertthat::assert_that(any(chk1 | chk2 | chk3))
@@ -149,11 +150,11 @@ extract <- function(connection,
 
   # TODO: add in measurements
   # measurements <- select_star_from(ctn, 'icu_audit', 'measurements')
-  
+
   # Filter to just the relevant concepts for the relevant patients
   tdt <- filter_obs(obs, params$concept_id, visit_occurrence_ids)
   # Standardise the naming
-  tdt <-  rename_obs(tdt) 
+  tdt <-  rename_obs(tdt)
   tdt <- make_times_relative(tdt,vdt)
 
   # https://stackoverflow.com/questions/26508519/how-to-add-elements-to-a-list-in-r-loop
@@ -166,17 +167,17 @@ extract <- function(connection,
     udt[, col_name := param$col_name]
     print(paste('*** Coalesced', param$short_name, "from", nrow(tdt), "rows to", nrow(udt), "rows at a", cadence, "hourly cadence using", param$func))
     tdts[[i]] <- udt
-    
+
   }
 
-  res <- rbindlist(tdts) 
+  res <- rbindlist(tdts)
 
   elapsed_time <- signif(
     as.numeric(
       difftime(
         lubridate::now(), starting, units = "hour")), 2)
   rlang::inform(paste(elapsed_time, "hours to process"))
-  
+
   if (requireNamespace("praise", quietly = TRUE)) {
     well_done <-
       praise::praise(
@@ -205,7 +206,7 @@ filter_obs <- function(dt, concept_ids, these_ids=NULL){
 
 rename_obs <- function(dt){
   'rename obs table in a standardised way so can merge with measurements'
-  # TODO: convert this function so that it can produce a standardised table 
+  # TODO: convert this function so that it can produce a standardised table
   # regardless of the source input
   # that is you can read directly from OMOP, from your star table etc
   cols <- c('person_id',
@@ -229,11 +230,11 @@ make_times_relative <- function(dt, vd, units = "hours", debug=FALSE) {
   'vd = visit_detail with visit_detail_start_datetime'
   'dt = obs or similar with visit_occurrence_id and datetime'
   'NOTE: returns time diff in hours'
-  # TODO: convert this to work with any pair of tables 
+  # TODO: convert this to work with any pair of tables
   # where one contains timeseries EAV and the other has an 'offset' date against an ID
   tdt <- data.table::copy(dt)
   assertthat::assert_that(uniqueN(vdt) == nrow(vdt))
-  
+
   tdt <- vdt[tdt, on=c('visit_detail_id')]
   tdt[, diff_time := as.numeric(difftime(datetime, visit_detail_start_datetime, units = units))]
   tdt <- tdt[order(visit_detail_id, diff_time)]
@@ -253,13 +254,13 @@ make_times_relative <- function(dt, vd, units = "hours", debug=FALSE) {
 
 coalesce_over <- function(dt, value_as='number', coalesce=NULL, cadence=1) {
   'given dt with diff times, collapse using function over cadence'
-  
+
   value_as <- paste0('value_as_', value_as)
   # TODO: where value_as_string/datetime etc. then build in supporting logic
   cols <- paste(c('visit_detail_id', 'diff_time', value_as))
-  
+
   if (is.null(coalesce)) coalesce <- "first"
-  
+
   dt <- dt[,..cols,with=TRUE]
   dt[, diff_time := round_any(diff_time, cadence)]
   dt[, value_as_number := do.call(coalesce, list(get(value_as))), by=.(visit_detail_id, diff_time)]
@@ -270,17 +271,17 @@ coalesce_over <- function(dt, value_as='number', coalesce=NULL, cadence=1) {
 parse_coalesce_functions <- function(funs=NULL, default_fun=data.table::first){
   #' unpack a function vector and return a list of lists (functions, and names)
   #' necessary because a list or vector of functions does not keep its names
-  assertthat::assert_that(is.null(funs) | is.vector(funs) | is.function(funs)) 
-  
+  assertthat::assert_that(is.null(funs) | is.vector(funs) | is.function(funs))
+
   if (is.null(funs)) {
     res <- list(default_fun, deparse(substitute(default_fun)))
   }
-  
-  
+
+
   if (is.function(funs)) {
     res <- list(funs, deparse(substitute(funs)))
   }
-  
+
   if (is.vector(funs)) {
     assertthat::assert_that(all(sapply(funs, is.function)))
     funs_names <- as.list(as.character(substitute(funs)))
@@ -288,12 +289,12 @@ parse_coalesce_functions <- function(funs=NULL, default_fun=data.table::first){
     funs_names <- funs_names[2:length(funs_names)]
     res <- list(funs, funs_names)
   }
-  
+
   res[[1]] <- unlist(res[[1]])
   res[[2]] <- unlist(sapply(res[[2]], eval))
   # unpack where functions are passed as data.table::first etc
   res[[3]] <- unlist(lapply(lapply(strsplit(unlist(res[[2]]), '::| +'), rev), `[[`, 1))
-  
+
   return(res)
 
 }
