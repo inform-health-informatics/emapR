@@ -1,7 +1,7 @@
-#' @title foo
+#' @title collapse_over
 #'
 #' @description
-#' foobar
+#' Wrangles a time series of (bed) moves and identifies department transfers etc.
 #'
 #' @import data.table
 #' @importFrom lubridate dhours
@@ -30,6 +30,7 @@ column_jump <- function(dt, col, order_vars, group, col_jump) {
   return(dt)
 
 }
+
 
 time_jump <- function(dt, in_time, out_time, order_vars, group) {
   # helper function for collapse_over

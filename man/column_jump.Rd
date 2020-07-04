@@ -2,7 +2,7 @@
 % Please edit documentation in R/utils_visit_detail.R
 \name{column_jump}
 \alias{column_jump}
-\title{foo}
+\title{collapse_over}
 \usage{
 column_jump(dt, col, order_vars, group, col_jump)
 }
@@ -18,5 +18,5 @@ column_jump(dt, col, order_vars, group, col_jump)
 \item{col_jump}{column where discontinuity will be flagged}
 }
 \description{
-foobar
+Wrangles a time series of (bed) moves and identifies department transfers etc.
 }
