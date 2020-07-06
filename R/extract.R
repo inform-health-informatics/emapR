@@ -114,17 +114,15 @@ extract <- function(connection,
   coalesce_rows <- parse_coalesce_functions(coalesce_rows)
 
   # check that we've either got one function to recycle or one function per variable
-  chk1 <- is.function(coalesce_rows)
-  chk2 <- length(coalesce_rows)
-  chk3 <- length(coalesce_rows) == length(concept_short_names)
-  assertthat::assert_that(any(chk1 | chk2 | chk3))
+  chk1 <- length(coalesce_rows)
+  chk2 <- length(coalesce_rows) == length(concept_short_names)
+  assertthat::assert_that(any(chk1 | chk2 ))
 
 
   # build the parameter table as per inspectEHR::extract
   params <- data.table(
     short_name = concept_short_names,
-    func = coalesce_rows[[3]], # short name; should be OK for functions in the global env
-    func_names_full = unlist(coalesce_rows[[2]])
+    func = coalesce_rows # short name; should be OK for functions in the global env
   )
   params <- params[concepts[,.(concept_id, target, short_name)], on='short_name', nomatch=0]
   params <- unique(params)
@@ -155,17 +153,18 @@ extract <- function(connection,
   tdt <- filter_obs(obs, params$concept_id, visit_occurrence_ids)
   # Standardise the naming
   tdt <-  rename_obs(tdt)
-  tdt <- make_times_relative(tdt,vdt)
+  tdt <- make_times_relative(tdt,vd)
 
   # https://stackoverflow.com/questions/26508519/how-to-add-elements-to-a-list-in-r-loop
   tdts <- vector("list", nrow(params))
 
   for (i in 1:length(tdts)) {
-    suppressWarnings( param <- params[i,] ) # warning from tibble around unknown columns?
+    param <- params[i,]
     udt <- tdt[concept_id == param$concept_id]
-    udt <- coalesce_over(udt, value_as=param$target, cadence=cadence)
+    udt <- coalesce_over(udt, value_as=param$target, coalesce = param$func, cadence=cadence)
     udt[, col_name := param$col_name]
-    print(paste('*** Coalesced', param$short_name, "from", nrow(tdt), "rows to", nrow(udt), "rows at a", cadence, "hourly cadence using", param$func))
+    print(paste('*** Coalesced', param$short_name, "from", nrow(tdt),
+                "rows to", nrow(udt), "rows at a", cadence, "hourly cadence using", param$func))
     tdts[[i]] <- udt
 
   }
@@ -175,8 +174,8 @@ extract <- function(connection,
   elapsed_time <- signif(
     as.numeric(
       difftime(
-        lubridate::now(), starting, units = "hour")), 2)
-  rlang::inform(paste(elapsed_time, "hours to process"))
+        lubridate::now(), starting, units = "secs")), 2)
+  rlang::inform(paste('\n', elapsed_time, "seconds to process"))
 
   if (requireNamespace("praise", quietly = TRUE)) {
     well_done <-
@@ -194,12 +193,33 @@ extract <- function(connection,
 # ================
 # Not exported
 
+coalesce_over <- function(dt, value_as='value_as_number', coalesce=NULL, cadence=1) {
+  'given dt with diff times, collapse using function over cadence'
+
+  # TODO: where value_as_string/datetime etc. then build in supporting logic
+
+  cols <- paste(c('visit_detail_id', 'diff_time', value_as))
+
+  if (is.null(coalesce)) coalesce <- "first"
+  if (value_as != 'value_as_number' & coalesce != 'first') {
+    rlang::warn(paste('!!! non-numeric parameter so forcing to first despite request'), coalesce)
+    coalesce <- 'first'
+  }
+
+  dt <- dt[,..cols,with=TRUE]
+  dt[, diff_time := round_any(diff_time, cadence)]
+  dt[, (value_as) := do.call(get(coalesce), list(get(value_as))), by=.(visit_detail_id, diff_time)]
+  return(unique(dt))
+}
+
+
+
 filter_obs <- function(dt, concept_ids, these_ids=NULL){
-  'filter observations by concept_id and episode (aka visit_occurrence)'
+  'filter observations by concept_id and episode (aka visit_detail)'
   tdt <- data.table::copy(dt)
   tdt <- tdt[observation_concept_id %chin% concept_ids]
-  if (!is.null(visit_occurrence_ids)) {
-    tdt <- tdt[visit_occurrence_id %in% these_ids]
+  if (!is.null(these_ids)) {
+    tdt <- tdt[visit_detail_id %in% these_ids]
   }
   return(tdt)
 }
@@ -225,7 +245,7 @@ rename_obs <- function(dt){
   return(tdt)
 }
 
-make_times_relative <- function(dt, vd, units = "hours", debug=FALSE) {
+make_times_relative <- function(dt, vdt, units = "hours", debug=FALSE) {
   'given a timeseries keyed by an id, and a start time for each id'
   'vd = visit_detail with visit_detail_start_datetime'
   'dt = obs or similar with visit_occurrence_id and datetime'
@@ -252,56 +272,26 @@ make_times_relative <- function(dt, vd, units = "hours", debug=FALSE) {
   return(tdt)
 }
 
-coalesce_over <- function(dt, value_as='value_as_number', coalesce=NULL, cadence=1) {
-  'given dt with diff times, collapse using function over cadence'
 
-  # TODO: where value_as_string/datetime etc. then build in supporting logic
-
-  cols <- paste(c('visit_detail_id', 'diff_time', value_as))
-
-  if (is.null(coalesce)) coalesce <- "first"
-  if (value_as != 'value_as_number' & coalesce != 'first') {
-    rlang::warn(paste('!!! non-numeric parameter so forcing to first despite request'), coalesce)
-    coalesce <- 'first'
+parse_coalesce_functions <- function(funs=c('first')){
+  #' return a character vector of function names
+  #' expects either alist (or) a character vector
+  if (is.atomic(is.character(funs))) {
+    return(funs)
+  } else {
+    # FIXME: Need to work out how to do this cleanly
+    stop("!!! Please pass function names not objects e.g. c('sum') not c(sum)" )
+    return( sapply(funs, function(x) as.character(substitute(x))) )
   }
-
-  dt <- dt[,..cols,with=TRUE]
-  dt[, diff_time := round_any(diff_time, cadence)]
-  dt[, (value_as) := do.call(coalesce, list(get(value_as))), by=.(visit_detail_id, diff_time)]
-  return(unique(dt))
-}
-
-
-parse_coalesce_functions <- function(funs=NULL, default_fun=data.table::first){
-  #' unpack a function vector and return a list of lists (functions, and names)
-  #' necessary because a list or vector of functions does not keep its names
-  assertthat::assert_that(is.null(funs) | is.vector(funs) | is.function(funs))
-
-  if (is.null(funs)) {
-    res <- list(default_fun, deparse(substitute(default_fun)))
-  }
-
-
-  if (is.function(funs)) {
-    res <- list(funs, deparse(substitute(funs)))
-  }
-
-  if (is.vector(funs)) {
-    assertthat::assert_that(all(sapply(funs, is.function)))
-    funs_names <- as.list(as.character(substitute(funs)))
-    # vector of functions c(sum, mean) will be parsed to c('c', 'sum', 'mean') so drop first item
-    funs_names <- funs_names[2:length(funs_names)]
-    res <- list(funs, funs_names)
-  }
-
-  res[[1]] <- unlist(res[[1]])
-  res[[2]] <- unlist(sapply(res[[2]], eval))
-  # unpack where functions are passed as data.table::first etc
-  res[[3]] <- unlist(lapply(lapply(strsplit(unlist(res[[2]]), '::| +'), rev), `[[`, 1))
-
-  return(res)
 
 }
+# parse_coalesce_functions()
+# parse_coalesce_functions('sum')
+# parse_coalesce_functions(c('sum', 'mean'))
+# parse_coalesce_functions(sum)
+# parse_coalesce_functions(c(sum, mean))
+# parse_coalesce_functions(alist(sum, mean))
+
 
 #' Fill in 2d Table to make a Sparse Table
 #'
