@@ -1,11 +1,11 @@
-Package: guidEHR
+Package: emapR
 Type: Package
-Title: What the Package Does (Title Case)
+Title: EMAP utilites
 Version: 0.1.0
 Authors@R: person("Steve", "Harris", role = c("aut", "cre"), email = "steve.harris@ucl.ac.uk")
 Maintainer: The package maintainer <yourself@somewhere.net>
-Description: More about what it does (maybe more than one line)
-    Use four spaces when indenting paragraphs within the Description.
+Description: EMAP utilites
+    R functions to accelerate working with EMAP
 License: GPL-3
 Encoding: UTF-8
 LazyData: true
@@ -14,5 +14,6 @@ Depends:
 Imports:
     data.table,
     assertthat,
+    checkmate,
     lubridate
 RoxygenNote: 7.1.0

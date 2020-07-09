@@ -1,44 +1,47 @@
 #' @title Extract & Reshape Data from EMAP
 #'
-#' This is the workhorse function that transcribes data from EMAP OPS from OMOP
-#' CDM 5.3.1 to a standard rectangular table with 1 column per dataitem and 1
-#' row per time per patient.
+#'   This is the workhorse function that transcribes data from EMAP OPS from
+#'   OMOP CDM 5.3.1 to a standard rectangular table with 1 column per dataitem
+#'   and 1 row per time per patient.
 #'
-#' The time unit is user definable, and set by the "cadence" argument. The
-#' default behaviour is to produce a table with 1 row per hour per patient. If
-#' there are duplicates/conflicts (e.g more than 1 event for a given hour), then
-#' the default behaviour is that only the first result for that hour is
-#' returned. One can override this behvaiour by supplying a vector of summary
-#' functions directly to the 'coalesce_rows' argument. This could also include
-#' any custom function written by the end user, so long as it takes a vector of
-#' length n, and returns a vector of length 1, of the original data type.
+#'   The time unit is user definable, and set by the "cadence" argument. The
+#'   default behaviour is to produce a table with 1 row per hour per patient. If
+#'   there are duplicates/conflicts (e.g more than 1 event for a given hour),
+#'   then the default behaviour is that only the first result for that hour is
+#'   returned. One can override this behvaiour by supplying a vector of summary
+#'   functions directly to the 'coalesce_rows' argument. This could also include
+#'   any custom function written by the end user, so long as it takes a vector
+#'   of length n, and returns a vector of length 1, of the original data type.
 #'
-#' Many events inside EMAP occur on a greater than hourly basis. Depending
-#' upon the chosen analysis, you may which to increase the cadence. 0.5 for
-#' example will produce a table with 1 row per 30 minutes per patient. Counter
-#' to this, 24 would produce 1 row per 24 hours.
+#'   Many events inside EMAP occur on a greater than hourly basis. Depending
+#'   upon the chosen analysis, you may which to increase the cadence. 0.5 for
+#'   example will produce a table with 1 row per 30 minutes per patient. Counter
+#'   to this, 24 would produce 1 row per 24 hours.
 #'
-#' Choose what variables you want to pull out wisely. This function is quite
-#' efficient considering what it needs to do, but it can take a very long
-#' time if extracting lots of data, and doing so repeatedly. It is a strong
-#' recomendation that you run your extraction on a small subset of patients
-#' first and check that you are happy with the result, before moving to a larger
-#' extraction.
+#'   Choose what variables you want to pull out wisely. This function is quite
+#'   efficient considering what it needs to do, but it can take a very long time
+#'   if extracting lots of data, and doing so repeatedly. It is a strong
+#'   recomendation that you run your extraction on a small subset of patients
+#'   first and check that you are happy with the result, before moving to a
+#'   larger extraction.
 #'
-#' The current implementation is focussed on in-patients only. And as such, all
-#' dataitems are referenced to the visit_start_datetime of the visit_occurrence.
-#' Thus, observations and measurements recorded outside the boudaries of the
-#' visit_occurrence are automatically removed. This is - at this stage -
-#' intensional behaviour.
+#'   The current implementation is focussed on in-patients only. And as such,
+#'   all dataitems are referenced to the visit_start_datetime of the
+#'   visit_occurrence. Thus, observations and measurements recorded outside the
+#'   boudaries of the visit_occurrence are automatically removed. This is - at
+#'   this stage - intensional behaviour.
 #'
 #' @param connection a EMAP database connection
 #' @param target_schema the target database schema
 #' @param visit_occurrence_ids an integer vector of episode_ids or NULL. If NULL
 #'   (the default) then all visits are extracted.
-#' @param concept_names a vector of OMOP concept_ids to be extracted
-#' @param rename a character vector of names you want to relabel OMOP codes
-#'   as, or NULL (the default) if you do not want to relabel. Given in the same
-#'   order as \code{concept_names}
+#' @param anchor_timestamps an timestamp vector or NULL of the same length as
+#'   visit_occurence_ids. If NULL (the default) then visit_start_datetime (from
+#'   visit_occurrence) is used.
+#' @param concept_ids a vector of OMOP concept_ids to be extracted
+#' @param concept_short_names a character vector of names you want to relabel
+#'   OMOP codes as, or NULL (the default) if you do not want to relabel. Given
+#'   in the same order as \code{concept_names}
 #' @param coalesce_rows a vector of summary functions that you want to summarise
 #'   data that is contributed higher than your set cadence. Given in the same
 #'   order as \code{concept_names}
@@ -64,71 +67,140 @@
 #' @importFrom dplyr first
 #'
 #' @export
-extract <- function(connection,
-                    target_schema,
-                    visit_occurrence_ids = NULL,
-                    concept_names = NULL,
-                    rename = NULL,
-                    coalesce_rows = NULL,
-                    chunk_size = 5000,
-                    cadence = 1) {
+extract <- function(connection,                   # via DBI; database connection
+                    target_schema,                # schema that holds the OMOP tables
+                    visit_occurrence_ids = NULL,  # visit ids to extract
+                    anchor_timestamps = NULL,     # timestamps to define relative dates
+                    concept_ids = NULL,           # concept ids
+                    concept_short_names = NULL,   # friendly names for variables
+                    coalesce_rows = NULL,         # function for collapsing data
+                    # chunk_size = 5000,          # deprecated
+                    cadence = 1                   # cadence for collapsing time series
+                    ) {
 
-  rlang::inform('--- NOTE: Not using chunksize argument at the moment')
-  rlang::inform('--- NOTE: `visit_occurrence_ids` are actually visit_detail_ids')
   starting <- now()
 
-  tables <- c('concepts', 'visit_detail', 'observation')
-  for (i in 1:length(tables)) {
-    t <- DBI::Id(schema=target_schema, table=tables[i])
+  # check the connection
+  assertthat::assert_that(DBI::dbIsValid(ctn))
+
+  # checks for at least one of the measurement and observation table
+  # and if the visit_occurrence table if visit_occurence IDs are not provided
+  tables <- data.table(table = c('observation', 'measurement'),
+                       path = '')
+  if (is.null(visit_occurrence_ids)) tables <- c(tables, 'visit_occurrence')
+  for (i in 1:nrow(tables)) {
+    t <- DBI::Id(schema=target_schema, table=tables[i]$table)
     chk <- DBI::dbExistsTable( connection,t)
-    assertthat::assert_that(chk, msg=paste('!!! unable to find table', tables[i], 'in connection'))
-  }
-  # Load visit details
-  vd <- select_star_from(ctn, target_schema, 'visit_detail')  # ICU department visits; unique key = csn + dt_admit
-  # Load and prepare the concepts
-  concepts <- select_star_from(ctn, target_schema, 'concepts')
-
-  if (!(is.null(visit_occurrence_ids) | is.vector(visit_occurrence_ids)) ) {
-    rlang::abort( "`visit_occurrence_ids` must be given as NULL (the default)")
+    assertthat::assert_that(chk, msg=paste('!!! unable to find table', tables[i]$table, 'in connection'))
+    tables[i]$path <- paste(target_schema, tables[i]$table, sep = '.')
   }
 
-  # Now define a table of anchor times to make the observation time relative
-  # e.g. following hospital admission, following ICU admission
-  # The following will align everything to the beginning of the ICU admission
-  vd <- vd[,.(visit_detail_id, visit_detail_start_datetime)]
+  # make sure we have one timestamp for each visit_occurence ID
+  if (!is.null(visit_occurrence_ids)) {
+    assertthat::assert_that(checkmate::check_posixct(anchor_times))
+    assertthat::assert_that(length(visit_occurrence_ids) == length(anchor_timestamps))
+  }
 
+  # cadence checks
   cadence_pos_num <- class(cadence) == "numeric" && cadence >= 0
   cadence_timestamp <- cadence == "timestamp"
-
   if (!(cadence_pos_num || cadence_timestamp)) {
     rlang::abort(
       "`cadence` must be given as a numeric scalar >= 0
        or the string 'timestamp'")
   }
 
-  # this will work for non-numeric data too
-  # either one function for all (or) one function for each item
+  # if coalesce rows is NULL then use 'first'
   if (is.null(coalesce_rows)) {
     rlang::inform("--- Using first to select values where more than one available")
+    # TODO: how to provide the package e.g. data.table::first
+    coalesce_rows <- data.table::first
+    coalesce_rows <- first
+  } else {
+    # check that coalesce rows contains functions
+    coalesce_rows <- parse_coalesce_functions(coalesce_rows)
   }
-  coalesce_rows <- parse_coalesce_functions(coalesce_rows)
 
   # check that we've either got one function to recycle or one function per variable
-  chk1 <- length(coalesce_rows)
+  chk1 <- length(coalesce_rows) > 0
   chk2 <- length(coalesce_rows) == length(concept_short_names)
   assertthat::assert_that(any(chk1 | chk2 ))
 
-
-  # build the parameter table as per inspectEHR::extract
-  params <- data.table(
-    short_name = concept_short_names,
-    func = coalesce_rows # short name; should be OK for functions in the global env
+  # now practically check the functions evaluate a simple numerical list
+  # before you start loading data
+  tryCatch(
+    expr = {
+      sapply(coalesce_rows, do.call, list(1:3))
+    },
+    error = function(e){
+      print('!!! Functions passed in coalesce rows failed on simple vector 1:3, please check')
+      print(e)
+    }
   )
-  params <- params[concepts[,.(concept_id, target, short_name)], on='short_name', nomatch=0]
-  params <- unique(params)
-  params$i_concept_names <- paste0('i', params$concept_id)
 
-  assertthat::assert_that(anyDuplicated(params[,.(short_name,func)]) == 0)
+  # define anchore times for date offsets
+  if (!is.null(visit_occurrence_ids) & !is.null(anchor_timestamps)) {
+    # use an arbitrary set of ids and anchor times
+    assertthat::assert_that(length(visit_occurrence_ids) == length(anchor_timestamps))
+    vo <- data.table(
+        visit_occurrence_id = visit_occurrence_ids,
+        anchor_time = anchor_timestamps
+    )
+  } else {
+    # load the visit occurrence table
+    vo <- select_from(ctn,
+                      target_schema,
+                      'visit_occurrence',
+                      cols=c('visit_occurrence_id', 'visit_start_datetime'))
+  }
+  if (is.null(visit_occurrence_ids)) {
+    # use all visit_start_datetimes from visit_occurrence table
+    vo <- vo[,.(visit_occurrence_id, anchor_time = visit_start_datetime)]
+  }
+  if (!is.null(visit_occurrence_ids) & is.null(anchor_timestamps)) {
+    # use selected visit_start_datetime from visit_occurrence table
+    vo <- vo[visit_occurrence_id %in% visit_occurrence_ids,
+             .(visit_occurrence_id, anchor_time = visit_start_datetime)]
+  }
+  assertthat::assert_that(nrow(vo) > 0)
+  # FIXME?
+  # assertthat::assert_that(uniqueN(vo) == nrow(vo))
+  vo <- unique(vo)
+
+  # If no friendly names provided then string(ify) the concept_id
+  if (is.null(concept_short_names)) rename <- as.character(concept_ids)
+
+  # Expand functions as needed or raise an error
+  # If one function provided then replicate for each param
+  if (length(coalesce_rows) == 1) {
+    coalesce_rows <- rep(coalesce_rows, length(concept_ids))
+  }
+  # if one function per parameter then no further action
+  if (length(coalesce_rows) == length(concept_ids)) {
+    # pass
+  }
+  # if functions and parameters differ then expand (with informational msg)
+  if (length(coalesce_rows) != length(concept_ids)) {
+    n_concept_ids <- length(concept_ids)
+    n_coalesce_rows <- length(coalesce_rows)
+    # Now expand up for each function
+    coalesce_rows <- rep(coalesce_rows, n_concept_ids )
+    concept_ids <- rep(concept_ids, each=n_coalesce_rows)
+    concept_short_names <- rep(concept_short_names, each=n_coalesce_rows)
+  }
+
+  # Prepare data.table to hold
+  # - concepts_ids
+  # - proposed friendly names for concept_ids
+  # - functions names (characters) to coalesce each data item
+  params <- data.table(
+    concept_ids = concept_ids,
+    short_name = concept_short_names,
+    func = coalesce_rows
+  )
+
+  assertthat::assert_that(!anyDuplicated(params))
+  assertthat::assert_that(!anyDuplicated(params[,.(short_name,func)]))
 
   # if more than one summary function provided for a variable then append that to the column name
   if (anyDuplicated(params$short_name)) {
@@ -141,35 +213,89 @@ extract <- function(connection,
   print(params)
   rlang::inform('\n--- END: parameters to be processed')
 
+  # Now start loading data
+  obs <- data.table()
+  mes <- data.table()
 
-  rlang::inform('--- NOTE: Potentially slow query; should take around 1 minute')
-  obs <- select_star_from(ctn, 'icu_audit', 'observation')
-  rlang::inform(paste('--- NOTE: Loaded', nrow(obs), 'observations'))
+  # Load observations
+  obs <- omop_select_from(connection,
+                          target_schema,
+                          'observation',
+                          concepts = params$concept_ids,
+                          chunk_size = 1e4)
+  if (nrow(obs)) {
+    setnames(obs, 'observation_concept_id', 'concept_id')
+    setnames(obs, 'observation_id', 'property_id')
+    setnames(obs, 'observation_datetime', 'datetime')
+  }
 
-  # TODO: add in measurements
-  # measurements <- select_star_from(ctn, 'icu_audit', 'measurements')
+  # Load measurements
+  mes <- omop_select_from(connection,
+                          target_schema,
+                          'measurement',
+                          concepts = params$concept_ids,
+                          chunk_size = 1e4)
+  if (nrow(mes)) {
+    setnames(mes, 'measurement_concept_id', 'concept_id')
+    setnames(mes, 'measurement_id', 'property_id')
+    setnames(mes, 'measurement_datetime', 'datetime')
+  }
+
+  # Union observations and measurements
+  dt <- list(obs, mes)
+  dt <- rbindlist(dt, fill=TRUE)
+  rm(obs,mes)
 
   # Filter to just the relevant concepts for the relevant patients
-  tdt <- filter_obs(obs, params$concept_id, visit_occurrence_ids)
-  # Standardise the naming
-  tdt <-  rename_obs(tdt)
-  tdt <- make_times_relative(tdt,vd)
+  tdt <- dt[visit_occurrence_id %in% visit_occurrence_ids]
+  rlang::inform(paste('--- NOTE: Loaded', nrow(tdt), 'observations'))
+
+  # Make times relative
+  tdt <- make_times_relative(tdt,vo)
+  tdt
 
   # https://stackoverflow.com/questions/26508519/how-to-add-elements-to-a-list-in-r-loop
   tdts <- vector("list", nrow(params))
 
+  # Coalesce each parameter
   for (i in 1:length(tdts)) {
+
     param <- params[i,]
     udt <- tdt[concept_id == param$concept_id]
-    udt <- coalesce_over(udt, value_as=param$target, coalesce = param$func, cadence=cadence)
+    if (nrow(udt) == 0) {
+      rlang::inform(paste('--- No data found for', param$short_name, "(skipping)"))
+      next()
+    }
+
+    tryCatch(
+    expr = {
+      value_from_NAs<- udt[
+        ,lapply(.SD, is.na),
+        .SDcols=c('value_as_concept_id',
+                  'value_as_datetime',
+                  'value_as_number',
+                  'value_as_string')]
+      col <- names(which.min( colSums(value_from_NAs) ))
+      assertthat::assert_that(length(col) == 1)
+      rlang::inform(paste('*** Using', col, 'to coalesce', param$col_name))
+    },
+    error = function(e){
+      rlang::warn(
+        paste('!!! Unable to coalesce',
+              param$short_name,
+              '(could not identify value_from column)'))
+      next()
+    } )
+    udt <- coalesce_over(udt, value_as=col, coalesce = param$func, cadence=cadence)
     udt[, col_name := param$col_name]
-    print(paste('*** Coalesced', param$short_name, "from", nrow(tdt),
+    rlang::inform(paste('*** Coalesced', param$short_name, "from", nrow(tdt),
                 "rows to", nrow(udt), "rows at a", cadence, "hourly cadence using", param$func))
     tdts[[i]] <- udt
 
   }
 
   res <- rbindlist(tdts, fill=TRUE)
+  res
 
   elapsed_time <- signif(
     as.numeric(
@@ -198,7 +324,7 @@ coalesce_over <- function(dt, value_as='value_as_number', coalesce=NULL, cadence
 
   # TODO: where value_as_string/datetime etc. then build in supporting logic
 
-  cols <- paste(c('visit_detail_id', 'diff_time', value_as))
+  cols <- paste(c('visit_occurrence_id', 'diff_time', value_as))
 
   if (is.null(coalesce)) coalesce <- "first"
   if (value_as != 'value_as_number' & coalesce != 'first') {
@@ -208,40 +334,17 @@ coalesce_over <- function(dt, value_as='value_as_number', coalesce=NULL, cadence
 
   dt <- dt[,..cols,with=TRUE]
   dt[, diff_time := round_any(diff_time, cadence)]
-  dt[, (value_as) := do.call(get(coalesce), list(get(value_as))), by=.(visit_detail_id, diff_time)]
+  dt[, (value_as) := do.call(get(coalesce), list(get(value_as))), by=.(visit_occurrence_id, diff_time)]
   return(unique(dt))
 }
-
-
 
 filter_obs <- function(dt, concept_ids, these_ids=NULL){
   'filter observations by concept_id and episode (aka visit_detail)'
   tdt <- data.table::copy(dt)
-  tdt <- tdt[observation_concept_id %chin% concept_ids]
+  tdt <- tdt[concept_id %in% concept_ids]
   if (!is.null(these_ids)) {
-    tdt <- tdt[visit_detail_id %in% these_ids]
+    tdt <- tdt[visit_occurrence_id %in% these_ids]
   }
-  return(tdt)
-}
-
-rename_obs <- function(dt){
-  'rename obs table in a standardised way so can merge with measurements'
-  # TODO: convert this function so that it can produce a standardised table
-  # regardless of the source input
-  # that is you can read directly from OMOP, from your star table etc
-  cols <- c('person_id',
-            'visit_occurrence_id',
-            'visit_detail_id',
-            'observation_datetime',
-            'observation_concept_id',
-            'value_as_concept_id',
-            'value_as_datetime',
-            'value_as_number',
-            'value_as_string'
-  )
-  tdt <- dt[,..cols, with=TRUE]
-  setnames(tdt, 'observation_datetime', 'datetime')
-  setnames(tdt, 'observation_concept_id', 'concept_id')
   return(tdt)
 }
 
@@ -255,11 +358,11 @@ make_times_relative <- function(dt, vdt, units = "hours", debug=FALSE) {
   tdt <- data.table::copy(dt)
   assertthat::assert_that(uniqueN(vdt) == nrow(vdt))
 
-  tdt <- vdt[tdt, on=c('visit_detail_id')]
-  tdt[, diff_time := as.numeric(difftime(datetime, visit_detail_start_datetime, units = units))]
-  tdt <- tdt[order(visit_detail_id, diff_time)]
+  tdt <- vdt[tdt, on=c('visit_occurrence_id')]
+  tdt[, diff_time := as.numeric(difftime(datetime, anchor_time, units = units))]
+  tdt <- tdt[order(visit_occurrence_id, diff_time)]
   if (!debug) {
-    tdt[, visit_detail_start_datetime := NULL]
+    tdt[, anchor_time := NULL]
     tdt[, datetime := NULL]
   }
   if (NA %in% tdt$diff_time){
@@ -268,14 +371,14 @@ make_times_relative <- function(dt, vdt, units = "hours", debug=FALSE) {
     # remember that the join is on the specific visit detail time
     tdt <- tdt[!is.na(diff_time)]
   }
-  setcolorder(tdt, c('person_id', 'visit_occurrence_id', 'visit_detail_id', 'diff_time', 'concept_id'))
+  setcolorder(tdt, c('person_id', 'visit_occurrence_id', 'diff_time', 'concept_id'))
   return(tdt)
 }
-
 
 parse_coalesce_functions <- function(funs=c('first')){
   #' return a character vector of function names
   #' expects either alist (or) a character vector
+  print(funs)
   if (is.atomic(is.character(funs))) {
     return(funs)
   } else {
@@ -285,13 +388,6 @@ parse_coalesce_functions <- function(funs=c('first')){
   }
 
 }
-# parse_coalesce_functions()
-# parse_coalesce_functions('sum')
-# parse_coalesce_functions(c('sum', 'mean'))
-# parse_coalesce_functions(sum)
-# parse_coalesce_functions(c(sum, mean))
-# parse_coalesce_functions(alist(sum, mean))
-
 
 #' Fill in 2d Table to make a Sparse Table
 #'
