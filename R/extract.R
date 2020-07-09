@@ -163,9 +163,10 @@ extract <- function(connection,                   # via DBI; database connection
              .(visit_occurrence_id, anchor_time = visit_start_datetime)]
   }
   assertthat::assert_that(nrow(vo) > 0)
-  # FIXME?
-  # assertthat::assert_that(uniqueN(vo) == nrow(vo))
+  # Assume that there might be multiple anchortimes for each visit therefore
+  # need to create a unique key for future joins FIXME?
   vo <- unique(vo)
+  vo[order(anchor_time), anchor_time_i := seq_len(.N), by=visit_occurrence_id]
 
   # If no friendly names provided then string(ify) the concept_id
   if (is.null(concept_short_names)) rename <- as.character(concept_ids)
@@ -252,7 +253,6 @@ extract <- function(connection,                   # via DBI; database connection
 
   # Make times relative
   tdt <- make_times_relative(tdt,vo)
-  tdt
 
   # https://stackoverflow.com/questions/26508519/how-to-add-elements-to-a-list-in-r-loop
   tdts <- vector("list", nrow(params))
@@ -324,7 +324,7 @@ coalesce_over <- function(dt, value_as='value_as_number', coalesce=NULL, cadence
 
   # TODO: where value_as_string/datetime etc. then build in supporting logic
 
-  cols <- paste(c('visit_occurrence_id', 'diff_time', value_as))
+  cols <- paste(c('visit_occurrence_id', 'anchor_time_i', 'diff_time', value_as))
 
   if (is.null(coalesce)) coalesce <- "first"
   if (value_as != 'value_as_number' & coalesce != 'first') {
@@ -334,7 +334,8 @@ coalesce_over <- function(dt, value_as='value_as_number', coalesce=NULL, cadence
 
   dt <- dt[,..cols,with=TRUE]
   dt[, diff_time := round_any(diff_time, cadence)]
-  dt[, (value_as) := do.call(get(coalesce), list(get(value_as))), by=.(visit_occurrence_id, diff_time)]
+  dt[, (value_as) := do.call(get(coalesce), list(get(value_as))),
+     by=.(visit_occurrence_id, anchor_time_i, diff_time)]
   return(unique(dt))
 }
 
@@ -358,7 +359,10 @@ make_times_relative <- function(dt, vdt, units = "hours", debug=FALSE) {
   tdt <- data.table::copy(dt)
   assertthat::assert_that(uniqueN(vdt) == nrow(vdt))
 
-  tdt <- vdt[tdt, on=c('visit_occurrence_id')]
+
+  # NOTE: allow cartesian here so multiple anchor times all get joined
+  tdt <- vdt[tdt, on=c('visit_occurrence_id'), allow.cartesian=TRUE]
+
   tdt[, diff_time := as.numeric(difftime(datetime, anchor_time, units = units))]
   tdt <- tdt[order(visit_occurrence_id, diff_time)]
   if (!debug) {
@@ -372,6 +376,7 @@ make_times_relative <- function(dt, vdt, units = "hours", debug=FALSE) {
     tdt <- tdt[!is.na(diff_time)]
   }
   setcolorder(tdt, c('person_id', 'visit_occurrence_id', 'diff_time', 'concept_id'))
+  setkey(tdt, person_id, visit_occurrence_id, anchor_time_i, diff_time, concept_id)
   return(tdt)
 }
 
